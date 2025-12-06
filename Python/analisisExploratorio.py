@@ -45,63 +45,82 @@ def generate_correlation_heatmap(df: pd.DataFrame, output_dir: str = DEFAULT_OUT
         fig.savefig(out_path, dpi=300, bbox_inches='tight')
     return fig, out_path
 
+def _columns_for_gases(df: pd.DataFrame, gases_base: list[str], show: str) -> list[str]:
+    cols = []
+    show = show.lower()
+    for base in gases_base:
+        gt_col = f"{base}(GT)"
+        pt08_candidates = [c for c in df.columns if c.startswith("PT08.")]
+        sensor_map_keywords = {
+            "CO": ["S1", "CO"],
+            "NMHC": ["S2", "NMHC"],
+            "NOx": ["S3", "NOx"],
+            "NO2": ["S4", "NO2"],
+            "O3": ["S5", "O3"],
+            "C6H6": ["C6H6", "benzene"],  
+        }
+        keys = sensor_map_keywords.get(base, [base])
+        pt_cols = [c for c in pt08_candidates if any(k in c for k in keys)]
+        if show in ("gt", "ambos") and gt_col in df.columns:
+            cols.append(gt_col)
+        if show in ("sensores", "ambos"):
+            cols.extend(pt_cols)
+  
+    seen = set(); out = []
+    for c in cols:
+        if c in df.columns and c not in seen:
+            out.append(c); seen.add(c)
+    return out
+
 def generate_avg_timeseries(
     df: pd.DataFrame,
-    gases=None,
+    gases=None, 
     *,
-    mode: str = 'General',   # 'General' | 'Laboral' | 'Fin de semana'
-    freq: str = 'D',         # 'D' diaria, 'W' semanal, 'M' mensual
-    window: int = 7,         # suavizado (media móvil)
+    mode: str = 'General',
+    freq: str = 'D',
+    window: int = 7,
     output_dir: str = DEFAULT_OUTPUT_DIR,
     filename: str = 'avg_timeseries.png',
-    save: bool = True
+    save: bool = True,
+    show: str = 'gt'  
 ):
-
     os.makedirs(output_dir, exist_ok=True)
     df2 = _ensure_datetime_index(_numeric_only(df))
 
-    if gases is None:
-        gases = [g for g in ['CO(GT)', 'NO2(GT)', 'NOx(GT)', 'C6H6(GT)', 'NMHC(GT)'] if g in df2.columns]
-    gases = [g for g in gases if g in df2.columns]
-    if not gases or df2.empty:
-        fig, ax = plt.subplots(figsize=(6, 3))
-        ax.text(0.5, 0.5, 'Sin datos/gases para graficar', ha='center', va='center')
+    if mode == 'Laboral':
+        df2 = df2[df2.index.dayofweek < 5]
+    elif mode == 'Fin de semana':
+        df2 = df2[df2.index.dayofweek >= 5]
+
+    if gases is None or not gases:
+        gases = ["CO", "NO2", "NOx", "C6H6", "NMHC", "O3"]
+    cols = _columns_for_gases(df2, gases, show)
+    if not cols:
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.text(0.5, 0.5, 'No hay columnas para la selección dada', ha='center', va='center')
         ax.axis('off')
         return fig, None
 
-    mode_norm = mode.lower()
-    if 'isweekend' in (c.lower() for c in df2.columns):
-        col_exact = next(c for c in df2.columns if c.lower() == 'isweekend')
-        if mode_norm == 'laboral':
-            df2 = df2[df2[col_exact] == False]
-        elif mode_norm == 'fin de semana':
-            df2 = df2[df2[col_exact] == True]
+    dfr = df2[cols].resample(freq).mean()
+    if window and window > 1:
+        dfr = dfr.rolling(window, min_periods=1).mean()
 
-    ts = (
-        df2[gases]
-        .resample(freq).mean()
-        .rolling(window, min_periods=1, center=True).mean()
-    )
-
-    if ts.empty:
-        fig, ax = plt.subplots(figsize=(6, 3))
-        ax.text(0.5, 0.5, 'Sin datos tras el filtro seleccionado', ha='center', va='center')
+    if dfr.empty:
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.text(0.5, 0.5, 'Serie vacía tras resample/suavizado', ha='center', va='center')
         ax.axis('off')
         return fig, None
 
-    fig, ax = plt.subplots(figsize=(14, 6))
-    ts.plot(ax=ax)
-
-    title_freq = {'D': 'diario', 'W': 'semanal', 'M': 'mensual'}.get(freq, freq)
-    ax.set_title(f'Tendencia de gases ({mode} • promedio {title_freq}, suavizado {window})')
+    fig, ax = plt.subplots(figsize=(12, 5))
+    dfr.plot(ax=ax)
+    ax.set_title(f"Tendencia de gases ({mode} • promedio {freq}, suavizado {window})")
     ax.set_xlabel('Fecha'); ax.set_ylabel('Concentración')
-    ax.grid(True); ax.legend()
-    fig.tight_layout()
+    ax.grid(True); fig.tight_layout()
 
     out_path = None
     if save:
         out_path = os.path.join(output_dir, filename)
-        fig.savefig(out_path, dpi=300, bbox_inches='tight')
+        fig.savefig(out_path, dpi=220, bbox_inches='tight')
     return fig, out_path
 
 if __name__ == '__main__':
